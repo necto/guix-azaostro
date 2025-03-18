@@ -1,4 +1,4 @@
-(define-module (llvm)
+(define-module (azaostro llvm)
   #:use-module (guix packages)
   #:use-module (guix profiles)
   #:use-module (gnu packages)
