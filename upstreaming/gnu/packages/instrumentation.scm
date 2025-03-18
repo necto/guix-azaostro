@@ -19,7 +19,9 @@
 
 ;; Make sure patches in this repository are visible,
 ;; but keep other dirs for patches of the dependencies
-(%patch-path (append (list (string-append (dirname (current-filename)) "/patches/"))
+(%patch-path (append (if (current-filename)
+                         (list (string-append (dirname (current-filename)) "/patches/"))
+                         '())
                      (map (lambda (directory)
                             (string-append directory "/upstreaming/gnu/packages/patches"))
                           %load-path)
