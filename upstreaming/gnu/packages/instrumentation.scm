@@ -17,6 +17,10 @@
   #:use-module (guix utils))
 
 
+;; Make sure patches in this repository are visible,
+;; but keep other dirs for patches of the dependencies
+(%patch-path (cons (string-append (dirname (current-filename)) "/patches/") (%patch-path)))
+
 (define-public uftrace-0.17
   (package
     (name "uftrace")
