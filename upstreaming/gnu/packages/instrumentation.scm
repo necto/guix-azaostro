@@ -1,4 +1,4 @@
-(define-module (gnu packages instrumentation)
+(define-module (upstreaming gnu packages instrumentation)
   #:use-module (gnu packages)
   #:use-module (gnu packages elf)
   #:use-module (gnu packages engineering)
