@@ -19,7 +19,11 @@
 
 ;; Make sure patches in this repository are visible,
 ;; but keep other dirs for patches of the dependencies
-(%patch-path (cons (string-append (dirname (current-filename)) "/patches/") (%patch-path)))
+(%patch-path (append (list (string-append (dirname (current-filename)) "/patches/"))
+                     (map (lambda (directory)
+                            (string-append directory "/upstreaming/gnu/packages/patches"))
+                          %load-path)
+                     (%patch-path)))
 
 (define-public uftrace-0.17
   (package
