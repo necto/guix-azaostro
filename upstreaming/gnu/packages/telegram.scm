@@ -90,17 +90,7 @@
      (base32
       "1dwqdnasn3igr7i14hkx1glxj0gn6rd852bj0w3k1ai9j295wnfz"))))
 
-(define lib-crl-for-telegram-desktop
-  (origin
-    (method git-fetch)
-    (uri (git-reference
-          (url "https://github.com/desktop-app/lib_crl.git")
-          (commit "c1d6b0273653095b10b4d0f4f7c30b614b690fd5")))
-    (file-name
-     (git-file-name "lib-crl-for-telegram-desktop" %telegram-version))
-    (sha256
-     (base32
-      "1sxn3qccsfbx1289z0fdrb4cggs16a8r75ic6wi81c6lnkrdi3wl"))))
+(define lib-crl-for-telegram-desktop (@@ (gnu packages telegram) lib-crl-for-telegram-desktop))
 
 (define lib-lottie-for-telegram-desktop
   (origin
@@ -114,17 +104,7 @@
      (base32
       "04sgbspp0wngpr5w2wjfl1hwk1kiy8kwk2sz841f1yj231s7v6xw"))))
 
-(define lib-qr-for-telegram-desktop
-  (origin
-    (method git-fetch)
-    (uri (git-reference
-          (url "https://github.com/desktop-app/lib_qr.git")
-          (commit "6fdf60461444ba150e13ac36009c0ffce72c4c83")))
-    (file-name
-     (git-file-name "lib-qr-for-telegram-desktop" %telegram-version))
-    (sha256
-     (base32
-      "1i5n3qvjkf4nv8k75cc0a71xyvpklc4nzg4k2zsfr2pxk0cy7hkw"))))
+(define lib-qr-for-telegram-desktop (@@ (gnu packages telegram) lib-qr-for-telegram-desktop))
 
 (define lib-rpl-for-telegram-desktop
   (origin
@@ -150,17 +130,7 @@
      (base32
       "0zxk7vxr29f8scdi2ymvvz4zh9zkln8r57y1n65x0vfi8vdihn1a"))))
 
-(define lib-storage-for-telegram-desktop
-  (origin
-    (method git-fetch)
-    (uri (git-reference
-          (url "https://github.com/desktop-app/lib_storage.git")
-          (commit "ccdc72548a5065b5991b4e06e610d76bc4f6023e")))
-    (file-name
-     (git-file-name "lib-storage-for-telegram-desktop" %telegram-version))
-    (sha256
-     (base32
-      "0b11ix95dzpkz335q0a6b5yg8qhj33s4fgj9ppl37pszcqq1j3wi"))))
+(define lib-storage-for-telegram-desktop (@@ (gnu packages telegram) lib-storage-for-telegram-desktop))
 
 (define lib-tl-for-telegram-desktop
   (origin
@@ -212,66 +182,11 @@
      (base32
       "178mf6lvgj4y5lscb68pc0yn3jcn66g04zszj74hpya18zjbmavw"))))
 
-(define tgcalls-for-telegram-desktop
-  (origin
-    (method git-fetch)
-    (uri (git-reference
-          (url "https://github.com/TelegramMessenger/tgcalls.git")
-          (commit "9bf4065ea00cbed5e63cec348457ed13143459d0")))
-    (file-name
-     (git-file-name "tgcalls-for-telegram-desktop" %telegram-version))
-    (sha256
-     (base32
-      "1p563a11w8jrid96xf03dg6j39ciz28n5f4r6g28lxhiphbqzfym"))))
+(define tgcalls-for-telegram-desktop (@@ (gnu packages telegram) tgcalls-for-telegram-desktop))
 
-(define-public rlottie-for-telegram-desktop
-  (let ((commit "8c69fc20cf2e150db304311f1233a4b55a8892d7")
-        (revision "678"))
-    (hidden-package
-     (package
-       (inherit rlottie)
-       (version
-        (git-version "0.0.1" revision commit))
-       (source
-        (origin
-          (method git-fetch)
-          (uri
-           (git-reference
-            (url "https://github.com/desktop-app/rlottie.git")
-            (commit commit)))
-          (file-name
-           (git-file-name "rlottie-for-telegram-desktop" version))
-          (sha256
-           (base32 "14gwg3sn6xdx9ymnx5r0vfm4pk8dwk92s10a1wdvfbjpyrxll64i"))
-          (modules '((guix build utils)))
-          (snippet
-           #~(begin
-               (substitute* "meson.build"
-                 (("werror=true") "werror=false"))))))))))
+(define cld3-for-telegram-desktop (@@ (gnu packages telegram) cld3-for-telegram-desktop))
 
-(define cld3-for-telegram-desktop
-  (origin
-   (method git-fetch)
-   (uri (git-reference
-         (url "https://github.com/google/cld3.git")
-         (commit "b48dc46512566f5a2d41118c8c1116c4f96dc661")))
-   (file-name
-    (git-file-name "cld3-for-telegram-desktop" %telegram-version))
-   (sha256
-    (base32
-     "0ayrrhfdwrf4260h9fsirkhhfrcvc3qqnh6h9wj3ixij2lq0wwqb"))))
-
-(define libprisma-for-telegram-desktop
-  (origin
-   (method git-fetch)
-   (uri (git-reference
-         (url "https://github.com/desktop-app/libprisma")
-         (commit "23b0d70f9709da9b38561d5706891a134d18df76")))
-   (file-name
-    (git-file-name "libprisma-for-telegram-desktop" %telegram-version))
-   (sha256
-    (base32
-     "0fg4x4ikj7f3706bmfvkwq4smxc98qr3cgpm25w48n4ys6wfgadg"))))
+(define libprisma-for-telegram-desktop (@@ (gnu packages telegram) libprisma-for-telegram-desktop))
 
 (define-public telegram-desktop
   (package
