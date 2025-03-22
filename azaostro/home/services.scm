@@ -85,8 +85,8 @@
     (list (service-extension home-xdg-configuration-files-service-type
                              symlink-all-files-in-all-dirs)))
 
-   (compose concatenate)
-   (extend (lambda (_ original-dir) original-dir))
+   (compose identity)
+   (extend append)
    (description "Escape guix-home strict reproducibility and create
 a symlink in your .config directly to the source files rather than
 to a /gnu/store snapshot of it.  Provide the name of the directory
