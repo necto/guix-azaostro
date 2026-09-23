@@ -743,5 +743,32 @@ reproducible across different CPUs.")
 ;;;   * No libLLVM-20.so / no LLVM_LINK_LLVM_DYLIB.  Everything is statically
 ;;;     linked, which is a large part of why it is fast; `llvm-config
 ;;;     --link-shared' and anything expecting to link libLLVM.so will fail.
+;;;
+;;; One search path is added on top of what make-clang-toolchain provides.
+;;; CMAKE_PREFIX_PATH is declared by Guix's `cmake' package with files '("")
+;;; -- "the whole profile root" -- and one such declaration covers everything
+;;; as long as all packages share a single profile.  This toolchain, though, is
+;;; meant to be installed into a profile of its own, so that `guix upgrade'
+;;; cannot trigger the multi-hour PGO rebuild; that profile holds no cmake, so
+;;; nothing declares the variable there, while ~/.guix-profile/etc/profile
+;;; keeps exporting it pointing at the stock toolchain.
+;;;
+;;; That loses silently: CMake's find_program() searches <prefix>/bin for every
+;;; CMAKE_PREFIX_PATH entry *before* it consults PATH, and compiler detection is
+;;; a find_program() call.  So `cc' on PATH resolves to this package while
+;;; CMAKE_C_COMPILER still comes out as the stock clang, however PATH is
+;;; ordered.  Declaring the search path here fixes it at the source, and is
+;;; honest besides: the output does ship lib/cmake/{llvm,clang,lld} for
+;;; find_package to pick up.
+;;;
+;;; Metadata only -- search paths are not derivation inputs, so the store path
+;;; is unchanged and the PGO pipeline is never re-run.  Confirm with
+;;; `guix build -d optimized-clang-with-lld-toolchain' before and after.
 (define-public optimized-clang-toolchain-with-lld
-  (make-clang-toolchain optimized-clang-with-lld libomp-20))
+  (let ((base (make-clang-toolchain optimized-clang-with-lld libomp-20)))
+    (package/inherit base
+      (native-search-paths
+       (cons (search-path-specification
+              (variable "CMAKE_PREFIX_PATH")
+              (files '("")))
+             (package-native-search-paths base))))))
