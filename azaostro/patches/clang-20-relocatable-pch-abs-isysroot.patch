@@ -1,0 +1,72 @@
+Normalize the -isysroot value before using it as the --relocatable-pch prefix.
+
+ASTWriter::WriteControlBlock runs every path it stores through
+cleanPathForOutput(), which makes it absolute, but it takes the relocation
+prefix straight from the command line:
+
+    BaseDirectory = std::string(isysroot);
+
+adjustFilenameForRelocatableAST() then compares the two textually, so a
+relative -isysroot never matches anything and relocation is silently skipped:
+no diagnostic is emitted and the AST file is still flagged relocatable.  This
+matters under ccache, whose base_dir feature rewrites absolute paths in the
+command line to relative ones -- including -isysroot -- and invokes the
+compiler with the rewritten arguments.  Relocation is then defeated, the PCH
+embeds absolute build paths, and every PCH-using translation unit misses the
+cache in a different build directory.
+
+Based on upstream commit 295b0ef7b9aa345867e458912c8ade3f55a41f99,
+"[C++20][Modules] Fix relocatable PCH feature." (llvm/llvm-project#180023),
+as refined by 3f2c28ec16a5.  Only the normalization half of that commit is
+applicable here; the other half un-nests the `else if', which is a regression
+introduced after 20.x by 63e2963f4a24 (#135147).  The upstream fix landed in
+LLVM 23.1.0 and was not backported to 20.x, 21.x or 22.x.
+
+This patch deliberately goes one step further than upstream.  Upstream
+normalizes with llvm::sys::path::remove_dots(Path), which leaves '..'
+components in place (remove_dot_dot defaults to false), so a sysroot spelled
+'../..' is absolutized to '<cwd>/../..' and still fails to prefix-match
+anything.  Since '../..' is exactly the spelling ccache produces, we pass
+remove_dot_dot=true.  The collapse is purely lexical and so is the comparison
+in adjustFilenameForRelocatableAST and the reassembly in
+ASTReader::ResolveImportedPath, which keeps writer and reader consistent.
+
+Upstream status: partially fixed in 23.1.0; the '..' case is not.
+
+diff --git a/clang/lib/Serialization/ASTWriter.cpp b/clang/lib/Serialization/ASTWriter.cpp
+--- a/clang/lib/Serialization/ASTWriter.cpp
++++ b/clang/lib/Serialization/ASTWriter.cpp
+@@ -1525,7 +1525,10 @@
+     BaseDirectory.assign(BaseDir.begin(), BaseDir.end());
+   } else if (!isysroot.empty()) {
+     // Write out paths relative to the sysroot if possible.
+-    BaseDirectory = std::string(isysroot);
++    SmallString<128> CleanedSysroot(isysroot);
++    FileMgr.makeAbsolutePath(CleanedSysroot);
++    llvm::sys::path::remove_dots(CleanedSysroot, /*remove_dot_dot=*/true);
++    BaseDirectory.assign(CleanedSysroot.begin(), CleanedSysroot.end());
+   }
+
+   // Module map file
+diff --git a/clang/test/PCH/reloc.c b/clang/test/PCH/reloc.c
+--- a/clang/test/PCH/reloc.c
++++ b/clang/test/PCH/reloc.c
+@@ -3,6 +3,18 @@
+ // RUN: %clang -target x86_64-apple-darwin11 -fsyntax-only \
+ // RUN:   -include-pch %t -isysroot %S/Inputs/libroot %s -Xclang -verify
+ // RUN: not %clang -target x86_64-apple-darwin11 -include-pch %t %s
++// RUN: llvm-bcanalyzer --dump --disable-histogram %t | FileCheck %s
++
++// A relative sysroot, including one spelled with '..', must be normalized
++// before it is used as the relocation prefix; otherwise relocation is
++// silently skipped and absolute paths end up in the AST file.
++// RUN: cd %S/Inputs/libroot/usr && %clang -target x86_64-apple-darwin11 \
++// RUN:   --relocatable-pch -o %t -isysroot .. include/reloc.h
++// RUN: llvm-bcanalyzer --dump --disable-histogram %t | FileCheck %s
++
++// CHECK: <ORIGINAL_FILE {{.*}}/> blob data = 'usr{{[/\\]}}include{{[/\\]}}reloc.h'
++// CHECK: <INPUT_FILE {{.*}}/> blob data = 'usr{{[/\\]}}include{{[/\\]}}reloc.h'
++// CHECK: <INPUT_FILE {{.*}}/> blob data = 'usr{{[/\\]}}include{{[/\\]}}reloc2.h'
+ // REQUIRES: x86-registered-target
+
+ #include <reloc.h>
