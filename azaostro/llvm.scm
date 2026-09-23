@@ -7,6 +7,7 @@
   #:use-module (guix gexp)
   ;; for optimized-clang-with-lld
   #:use-module (guix build-system gnu)
+  #:use-module (guix build-system trivial)
   #:use-module ((guix licenses) #:prefix license:)
   #:use-module (gnu packages cmake)
   #:use-module (gnu packages compression)
@@ -80,10 +81,12 @@
 ;;;     instrumented training build.  Budget hours and tens of GB of scratch
 ;;;     space; intermediates are deleted before the output is finalised.
 ;;;   * Header/crt search paths are baked into bin/clang.cfg rather than taken
-;;;     from the profile.  Config-file arguments are *prepended* to the command
-;;;     line, so a project that brings its own C++ standard library must pass
-;;;     --no-default-config (and re-supply the link flags) to keep the cfg's
-;;;     -isystem entries from shadowing its own headers.
+;;;     from the profile, because the build does not pass Guix's
+;;;     -DGCC_INSTALL_PREFIX / -DC_INCLUDE_DIRS.  The cfg this package installs
+;;;     is unusable for anything that brings its own C++ standard library; it is
+;;;     repaired downstream by optimized-clang-with-lld/fixed-config, which is
+;;;     what optimized-clang-with-lld-toolchain actually ships.  Install *this*
+;;;     package directly only if you know why you want the raw cfg.
 ;;; ---------------------------------------------------------------------------
 
 ;;; Source and version track Guix's own llvm-20 (20.1.8) so the hash and the
@@ -728,6 +731,193 @@ reproducible across different CPUs.")
     ;; a package transformation to trigger the whole multi-hour rebuild.
     (properties (package-properties clang-20))))
 
+;;; ---------------------------------------------------------------------------
+;;; Repaired driver configuration.
+;;;
+;;; Guix's own clang is configured with -DGCC_INSTALL_PREFIX=<gcc:lib> and
+;;; -DC_INCLUDE_DIRS=<glibc>/include (gnu/packages/llvm.scm), which is why it
+;;; never searches /usr/include and why its libstdc++ header directories sit in
+;;; the driver's *builtin* slot.  The build above passes neither, and substitutes
+;;; a bin/clang.cfg full of -isystem entries.  Two consequences:
+;;;
+;;;   * -nostdinc++ cannot remove an -isystem, so <gcc>/include/c++ stays on the
+;;;     search path for a project that brings its own libc++.  Guix's gcc uses a
+;;;     flat layout, so that directory also holds libstdc++'s C wrapper headers
+;;;     (stdlib.h, math.h, ...).  libc++'s own stdlib.h does
+;;;     `#include_next <stdlib.h>' and lands on the libstdc++ wrapper instead of
+;;;     glibc's, whose `using std::abort;' then has no <cstdlib> behind it.  Any
+;;;     build of libc++ with this compiler fails.
+;;;   * /usr/include is searched at all, as a fallback behind the -isystem list.
+;;;
+;;; The fix is a different set of driver flags:
+;;;
+;;;   --gcc-install-dir=  puts the libstdc++ directories in the builtin slot, so
+;;;                       -nostdinc++ removes them, and keeps them ahead of libc
+;;;                       so <cstdlib>'s #include_next still reaches glibc.
+;;;   --sysroot=<glibc>   drops /usr/include (glibc has no usr/include, so the
+;;;                       system include list comes out empty).  -isysroot does
+;;;                       not do this on Linux; only --sysroot does.
+;;;   -Wl,--sysroot=/     undoes the sysroot for lld only.  Otherwise lld
+;;;                       resolves the absolute paths inside glibc's libc.so
+;;;                       linker script relative to the sysroot and cannot find
+;;;                       libc.so.6.  It provokes no unused-argument warning on
+;;;                       compile-only invocations, which matters because
+;;;                       -Werror=unused-command-line-argument is common.
+;;;
+;;; Rewriting the cfg cannot be done in a symlink farm: clang resolves argv[0]
+;;; through symlinks and looks for <progname>.cfg next to the *real* binary, so
+;;; a cfg placed beside a symlink is ignored.  Hence this package materialises
+;;; bin/ as real files (~3.8 GiB, which store deduplication reclaims) and
+;;; symlinks everything else.  It is a separate package rather than a change to
+;;; the one above precisely so that the multi-hour PGO+ThinLTO build is reused
+;;; from the store untouched.
+;;;
+;;; The flag values are parsed out of the existing cfg rather than recomputed
+;;; from inputs.  The store paths in there came from the gnu-build-system's
+;;; implicit "gcc" and "libc", which are not necessarily the same objects as the
+;;; `gcc' and `glibc' variables in scope here; reading them back is the only way
+;;; to be sure the repaired cfg names the same glibc the compiler was built
+;;; against.
+(define optimized-clang-with-lld/fixed-config
+  (package
+    (inherit optimized-clang-with-lld)
+    (name "optimized-clang-with-lld-fixed-config")
+    (source #f)
+    (build-system trivial-build-system)
+    (native-inputs '())
+    (inputs (list optimized-clang-with-lld))
+    (arguments
+     (list
+      ;; Only (guix build utils) has to be imported into the build side; the
+      ;; ice-9 and srfi modules below ship with Guile.  Listing them here as
+      ;; well makes `guix build' warn about importing host modules.
+      #:modules '((guix build utils))
+      #:builder
+      #~(begin
+          (use-modules (guix build utils)
+                       (ice-9 ftw)
+                       (ice-9 rdelim)
+                       (srfi srfi-1))
+          (let*
+              ((base     #$optimized-clang-with-lld)
+               (out      #$output)
+               (base-bin (string-append base "/bin"))
+               (out-bin  (string-append out "/bin"))
+
+               (entries (lambda (dir)
+                          (scandir dir (lambda (f)
+                                         (not (member f '("." "..")))))))
+
+               (lines (lambda (file)
+                        (call-with-input-file file
+                          (lambda (port)
+                            (let loop ((acc '()))
+                              (let ((l (read-line port)))
+                                (if (eof-object? l)
+                                    (reverse acc)
+                                    (loop (cons l acc)))))))))
+
+               ;; <gcc-lib>/lib/gcc/<triplet>/<version>, the directory holding
+               ;; crtbegin.o -- what --gcc-install-dir wants.  Guix's gcc:lib
+               ;; has exactly one triplet and one version, so insisting on that
+               ;; is a cheap way to notice a layout change.
+               (only-subdir
+                (lambda (dir)
+                  (let ((subs (entries dir)))
+                    (unless (and subs (= 1 (length subs)))
+                      (error "expected exactly one entry under" dir subs))
+                    (string-append dir "/" (car subs)))))
+
+               (old (lines (string-append base-bin "/clang.cfg")))
+               (after (lambda (prefix line)
+                        (and (string-prefix? prefix line)
+                             (substring line (string-length prefix)))))
+
+               (gcc-lib (or (any (lambda (l) (after "--gcc-toolchain=" l)) old)
+                            (error "clang.cfg: no --gcc-toolchain= line")))
+               ;; -B<libc>/lib is the only mention of libc that is unambiguous:
+               ;; the -L and -isystem lines cannot be told apart from gcc's.
+               (libc (or (any (lambda (l)
+                                (and (string-prefix? "-B" l)
+                                     (string-suffix? "/lib" l)
+                                     (substring l 2 (- (string-length l) 4))))
+                              old)
+                         (error "clang.cfg: no -B<libc>/lib line")))
+               (install-dir (only-subdir
+                             (only-subdir (string-append gcc-lib "/lib/gcc"))))
+
+               (isystem (filter-map (lambda (l) (after "-isystem " l)) old))
+               ;; Drop the libstdc++ directories (--gcc-install-dir supplies
+               ;; them now) and glibc's include (re-added below in a fixed
+               ;; position); carry anything else over -- today that is only the
+               ;; kernel headers, but do not hard-code that.
+               (carried (remove (lambda (p)
+                                  (or (string-contains p "/include/c++")
+                                      (string=? p (string-append libc
+                                                                 "/include"))))
+                                isystem))
+
+               (cfg (string-join
+                     (append
+                      (list (string-append "--gcc-toolchain=" gcc-lib)
+                            (string-append "--gcc-install-dir=" install-dir)
+                            (string-append "--sysroot=" libc)
+                            (string-append "-L" gcc-lib "/lib")
+                            (string-append "-L" libc "/lib")
+                            (string-append "-B" libc "/lib")
+                            (string-append "-idirafter " libc "/include"))
+                      (map (lambda (p) (string-append "-idirafter " p))
+                           carried)
+                      (list "-Wl,--sysroot=/"))
+                     "\n" 'suffix)))
+
+            (unless (file-exists? (string-append install-dir "/crtbegin.o"))
+              (error "no crtbegin.o under" install-dir))
+
+            ;; Everything but bin/ is content-identical to the base package.
+            (mkdir-p out)
+            (for-each (lambda (e)
+                        (unless (string=? e "bin")
+                          (symlink (string-append base "/" e)
+                                   (string-append out "/" e))))
+                      (entries base))
+
+            ;; bin/ must be real files: see the note above about cfg lookup
+            ;; following symlinks.  Intra-bin symlinks (clang -> clang-20,
+            ;; ld.lld -> lld, ...) are recreated verbatim so they keep pointing
+            ;; inside this output and thus at this output's cfg.
+            (mkdir-p out-bin)
+            (for-each
+             (lambda (e)
+               (let ((src (string-append base-bin "/" e))
+                     (dst (string-append out-bin "/" e)))
+                 (if (eq? 'symlink (stat:type (lstat src)))
+                     (symlink (readlink src) dst)
+                     (begin
+                       (copy-file src dst)
+                       (chmod dst (stat:perms (stat src)))))))
+             (entries base-bin))
+
+            ;; Replace exactly the cfg files the base shipped, so which
+            ;; program names get a default config does not change.
+            (let ((cfgs (scandir base-bin
+                                 (lambda (f) (string-suffix? ".cfg" f)))))
+              (when (null? cfgs)
+                (error "base clang shipped no .cfg files; nothing to repair"))
+              (for-each (lambda (f)
+                          (let ((p (string-append out-bin "/" f)))
+                            (delete-file p)
+                            (call-with-output-file p
+                              (lambda (port) (display cfg port)))))
+                        cfgs))))))
+    (synopsis "PGO+ThinLTO+jemalloc optimized Clang with LLD and a fixed driver
+configuration")
+    (description
+     "This package is @code{optimized-clang-with-lld} with its
+@file{bin/*.cfg} driver configuration rewritten so that @code{-nostdinc++}
+works and @file{/usr/include} is never searched.  The compiler binaries are
+byte-identical; only the configuration files differ.")))
+
 ;;; Profile-ready variant, and a drop-in replacement for
 ;;; clang-toolchain-with-lld-20: same bin/ commands (clangd, clang-tidy,
 ;;; clang-format, the llvm-* tools, FileCheck/not/count), same compiler-rt
@@ -761,12 +951,20 @@ reproducible across different CPUs.")
 ;;; honest besides: the output does ship lib/cmake/{llvm,clang,lld} for
 ;;; find_package to pick up.
 ;;;
-;;; Metadata only -- search paths are not derivation inputs, so the store path
-;;; is unchanged and the PGO pipeline is never re-run.  Confirm with
-;;; `guix build -d optimized-clang-with-lld-toolchain' before and after.
+;;; Search paths are not derivation inputs, so adding one does not by itself
+;;; re-derive anything.
+;;;
+;;; The clang underneath is optimized-clang-with-lld/fixed-config, not
+;;; optimized-clang-with-lld: see the long comment on that package.  The name is
+;;; pinned rather than derived from it, because make-clang-toolchain builds the
+;;; name from the clang's name and `optimized-clang-with-lld-toolchain' is what
+;;; ~/config/exe/install-optimized-clang installs and what the pinned channel
+;;; file names.
 (define-public optimized-clang-toolchain-with-lld
-  (let ((base (make-clang-toolchain optimized-clang-with-lld libomp-20)))
+  (let ((base (make-clang-toolchain optimized-clang-with-lld/fixed-config
+                                    libomp-20)))
     (package/inherit base
+      (name "optimized-clang-with-lld-toolchain")
       (native-search-paths
        (cons (search-path-specification
               (variable "CMAKE_PREFIX_PATH")
