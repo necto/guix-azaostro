@@ -9,6 +9,7 @@
   #:use-module (guix build-system gnu)
   #:use-module (guix build-system trivial)
   #:use-module ((guix licenses) #:prefix license:)
+  #:use-module ((gnu packages base) #:select (make-ld-wrapper))
   #:use-module (gnu packages cmake)
   #:use-module (gnu packages compression)
   #:use-module (gnu packages gcc)
@@ -778,6 +779,30 @@ reproducible across different CPUs.")
 ;;; `gcc' and `glibc' variables in scope here; reading them back is the only way
 ;;; to be sure the repaired cfg names the same glibc the compiler was built
 ;;; against.
+;;; Guix links against store libraries that are on no default loader path, so
+;;; an -rpath has to be baked into every executable.  That is what
+;;; `ld-wrapper' does: it scans the -L/-l switches, resolves each library, and
+;;; appends `-rpath <dir>' for the ones inside the store.  Guix's stock
+;;; clang-with-lld toolchain gets this for lld from `lld-wrapper', which the
+;;; profile puts at bin/ld.lld; the stock clang ships no lld of its own, so the
+;;; driver falls back to PATH and finds the wrapper there.
+;;;
+;;; This clang *does* ship lld, and the driver looks next to itself (its
+;;; InstalledDir) before consulting PATH.  A wrapper in the profile would
+;;; therefore never be reached, and every link came out with no RUNPATH:
+;;;
+;;;   ./a.out: error while loading shared libraries: libstdc++.so.6:
+;;;   cannot open shared object file: No such file or directory
+;;;
+;;; So the wrapper has to sit inside this package's bin/.  Only ld.lld is
+;;; wrapped, not lld: ld64.lld, lld-link and wasm-ld are symlinks to lld and
+;;; pick their flavour from argv[0], which ld-wrapper rewrites to the basename
+;;; of the program it execs.
+(define optimized-ld.lld-wrapper
+  (make-ld-wrapper "optimized-ld.lld-wrapper"
+                   #:binutils optimized-clang-with-lld
+                   #:linker "ld.lld"))
+
 (define optimized-clang-with-lld/fixed-config
   (package
     (inherit optimized-clang-with-lld)
@@ -785,7 +810,7 @@ reproducible across different CPUs.")
     (source #f)
     (build-system trivial-build-system)
     (native-inputs '())
-    (inputs (list optimized-clang-with-lld))
+    (inputs (list optimized-clang-with-lld optimized-ld.lld-wrapper))
     (arguments
      (list
       ;; Only (guix build utils) has to be imported into the build side; the
@@ -909,7 +934,15 @@ reproducible across different CPUs.")
                             (delete-file p)
                             (call-with-output-file p
                               (lambda (port) (display cfg port)))))
-                        cfgs))))))
+                        cfgs))
+
+            ;; Interpose the rpath-adding wrapper: see the note above.
+            (let ((p (string-append out-bin "/ld.lld")))
+              (unless (false-if-exception (lstat p))
+                (error "base clang shipped no bin/ld.lld"))
+              (delete-file p)
+              (symlink (string-append #$optimized-ld.lld-wrapper "/bin/ld.lld")
+                       p))))))
     (synopsis "PGO+ThinLTO+jemalloc optimized Clang with LLD and a fixed driver
 configuration")
     (description
